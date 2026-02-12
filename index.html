@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>北千住デートラリー（試作）</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+    body { margin: 0; padding: 0; font-family: sans-serif; background: #fafafa; }
+    #map { height: 60vh; width: 100%; }
+    .status-bar { padding: 15px; background: #fff; border-bottom: 1px solid #ddd; text-align: center; font-weight: bold; color: #333; }
+    .mission-box { padding: 20px; background: #fff; position: absolute; bottom: 0; width: 100%; box-sizing: border-box; border-radius: 20px 20px 0 0; box-shadow: 0 -2px 10px rgba(0,0,0,0.1); transition: bottom 0.3s; z-index: 1000; }
+    h2 { margin: 0 0 10px; font-size: 18px; color: #e91e63; }
+    p { margin: 0 0 15px; font-size: 14px; color: #666; }
+    button { width: 100%; padding: 15px; border: none; border-radius: 10px; background: #ddd; color: #fff; font-size: 16px; font-weight: bold; cursor: pointer; pointer-events: none; }
+    button.active { background: #e91e63; pointer-events: auto; box-shadow: 0 4px 6px rgba(233,30,99,0.3); }
+    
+    /* カメラモードのスタイル */
+    #camera-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; z-index: 2000; }
+    video { width: 100%; height: 100%; object-fit: cover; }
+    .overlay-guide { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 80%; height: 60%; border: 2px dashed rgba(255,255,255,0.7); box-shadow: 0 0 0 9999px rgba(0,0,0,0.5); pointer-events: none; }
+    .guide-text { position: absolute; top: 10%; width: 100%; text-align: center; color: white; text-shadow: 0 2px 4px rgba(0,0,0,0.8); font-size: 18px; z-index: 2001; }
+    #shutter-btn { position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); width: 70px; height: 70px; border-radius: 50%; background: white; border: 5px solid rgba(255,255,255,0.5); cursor: pointer; z-index: 2001; }
+    #close-camera { position: absolute; top: 20px; right: 20px; color: white; font-size: 24px; cursor: pointer; z-index: 2001; }
+
+    /* スタンプ完了画面 */
+    #stamp-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.95); z-index: 3000; justify-content: center; align-items: center; flex-direction: column; text-align: center; }
+    #stamp-modal img { max-width: 80%; border-radius: 10px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); }
+    .close-stamp-btn { margin-top: 20px; padding: 10px 30px; background: #333; color: white; border: none; border-radius: 5px; }
+</style>
+</head>
+<body>
+
+<div class="status-bar">現在地: <span id="gps-status">取得中...</span></div>
+<div id="map"></div>
+
+<div class="mission-box">
+    <h2 id="mission-title">Spot A: 北千住駅西口</h2>
+    <p id="mission-desc">まずは駅のデッキへ！ターゲットまであと <span id="dist-val">---</span> m</p>
+    <button id="camera-btn">📸 エリア内でカメラ起動</button>
+</div>
+
+<div id="camera-modal">
+    <div id="close-camera">✕</div>
+    <div class="guide-text" id="guide-msg">足元を合わせて！</div>
+    <video id="video" autoplay playsinline></video>
+    <div class="overlay-guide"></div> <div id="shutter-btn"></div>
+</div>
+
+<div id="stamp-modal">
+    <h2>🎉 STAMP GET!</h2>
+    <img id="result-photo" src="" alt="Captured">
+    <p>ナイスショット！写真はこの端末に保存されます。</p>
+    <button class="close-stamp-btn" onclick="closeStamp()">次へ進む</button>
+</div>
+
+<script>
+    // 北千住のスポット定義 (緯度, 経度)
+    const spots = [
+        { id: 1, name: "Spot A: 駅西口デッキ", desc: "二人の靴を合わせて撮ろう", lat: 35.7498, lng: 139.8045, guide: "靴を枠に入れて！" },
+        { id: 2, name: "Spot B: 宿場町通り", desc: "レトロな看板を指差して！", lat: 35.7510, lng: 139.8030, guide: "看板を枠に入れて！" },
+        { id: 3, name: "Spot C: 荒川河川敷", desc: "空をバックに影を撮ろう", lat: 35.7550, lng: 139.8080, guide: "影を枠に入れて！" }
+    ];
+
+    let currentSpotIndex = 0;
+    let userLat = 0, userLng = 0;
+
+    // 地図の初期化（北千住中心）
+    const map = L.map('map').setView([35.7494, 139.8051], 15);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+        attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    // スポットにピンを立てる
+    const markers = [];
+    spots.forEach((spot, index) => {
+        const marker = L.marker([spot.lat, spot.lng]).addTo(map).bindPopup(spot.name);
+        markers.push(marker);
+    });
+
+    // GPS取得開始
+    if (navigator.geolocation) {
+        navigator.geolocation.watchPosition((position) => {
+            userLat = position.coords.latitude;
+            userLng = position.coords.longitude;
+            document.getElementById('gps-status').innerText = "取得OK";
+            
+            // 現在地マーカー（青丸）
+            if(window.userMarker) map.removeLayer(window.userMarker);
+            window.userMarker = L.circleMarker([userLat, userLng], {color: 'blue', radius: 8}).addTo(map);
+
+            checkDistance();
+        }, (err) => {
+            document.getElementById('gps-status').innerText = "GPS許可が必要です";
+            alert("位置情報の許可をONにしてください！");
+        });
+    }
+
+    // 距離判定ロジック
+    function checkDistance() {
+        if(currentSpotIndex >= spots.length) {
+            document.getElementById('mission-title').innerText = "コンプリート！";
+            document.getElementById('mission-desc').innerText = "おめでとうございます！デート楽しんでね！";
+            return;
+        }
+
+        const target = spots[currentSpotIndex];
+        const dist = getDistance(userLat, userLng, target.lat, target.lng); // メートル計算
+        
+        document.getElementById('mission-title').innerText = target.name;
+        document.getElementById('dist-val').innerText = Math.round(dist);
+        document.getElementById('mission-desc').innerText = target.desc + ` (あと ${Math.round(dist)}m)`;
+
+        const btn = document.getElementById('camera-btn');
+        // 50m以内ならボタン有効化 (テスト用に3000mにしてます。本番は50に。)
+        if (dist < 3000) { 
+            btn.classList.add('active');
+            btn.innerText = "📸 カメラを起動する";
+            btn.onclick = () => openCamera(target.guide);
+        } else {
+            btn.classList.remove('active');
+            btn.innerText = `エリアまであと ${Math.round(dist)}m`;
+            btn.onclick = null;
+        }
+    }
+
+    // カメラ機能（ブラウザ完結）
+    const video = document.getElementById('video');
+    
+    function openCamera(guideMsg) {
+        document.getElementById('camera-modal').style.display = 'block';
+        document.getElementById('guide-msg').innerText = guideMsg;
+        
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+            .then(stream => { video.srcObject = stream; })
+            .catch(err => alert("カメラの許可が必要です"));
+    }
+
+    document.getElementById('close-camera').onclick = () => {
+        document.getElementById('camera-modal').style.display = 'none';
+        const stream = video.srcObject;
+        if(stream) stream.getTracks().forEach(track => track.stop());
+    };
+
+    // シャッターボタン（擬似的に画像をキャプチャ）
+    document.getElementById('shutter-btn').onclick = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext('2d').drawImage(video, 0, 0);
+        
+        // 画像を生成（本来はここでスマホにDLさせたりする）
+        const imgUrl = canvas.toDataURL('image/png');
+        document.getElementById('result-photo').src = imgUrl;
+        
+        document.getElementById('camera-modal').style.display = 'none';
+        document.getElementById('stamp-modal').style.display = 'flex';
+        
+        // 次のスポットへ
+        currentSpotIndex++;
+        checkDistance();
+    };
+
+    function closeStamp() {
+        document.getElementById('stamp-modal').style.display = 'none';
+    }
+
+    // 2点間の距離計算 (Haversine formula)
+    function getDistance(lat1, lon1, lat2, lon2) {
+        const R = 6371e3; // 地球の半径 (m)
+        const φ1 = lat1 * Math.PI/180;
+        const φ2 = lat2 * Math.PI/180;
+        const Δφ = (lat2-lat1) * Math.PI/180;
+        const Δλ = (lon2-lon1) * Math.PI/180;
+        const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
+                  Math.cos(φ1) * Math.cos(φ2) *
+                  Math.sin(Δλ/2) * Math.sin(Δλ/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c;
+    }
+</script>
+</body>
+</html>
