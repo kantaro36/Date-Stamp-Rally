@@ -20,17 +20,25 @@
     /* 地図：高さを少し調整 */
     #map { height: 60vh; width: 100%; z-index: 0; }
 
-    /* ステータスバー：白ベースにピンクの影をつけてポップに */
-    .status-bar { 
-        position: absolute; top: 20px; left: 50%; transform: translateX(-50%); 
-        width: 90%; max-width: 380px; padding: 10px 20px; 
-        background: #fff; 
-        border: 2px solid #ffdde1; /* 枠線を追加 */
-        border-radius: 50px; 
-        box-shadow: 0 4px 15px rgba(255, 105, 180, 0.15); 
-        text-align: center; font-weight: 800; color: #ff6b81; /* 文字色を濃いピンクに */
-        z-index: 500; font-size: 15px;
-        display: flex; justify-content: center; align-items: center; gap: 8px; /* アイコンと文字の間隔 */
+    /* ステータスバーの代わりに旗のスタイルを追加 */
+    #gps-flag {
+        position: absolute; top: 20px; left: 20px;
+        width: 50px; height: 50px;
+        background: #fff; border-radius: 50%;
+        display: flex; justify-content: center; align-items: center;
+        z-index: 500; font-size: 24px; color: #ccc;
+    }
+    /* GPS取得中の色 */
+    #gps-flag.active { 
+        color: #ff0000;
+        animation: pop 0.5s ease;
+    }
+    @keyframes pop { 50% { transform: scale(1.2); } }
+
+    /* mission-boxに上の太線を追加 */
+    .mission-box { 
+        /* （既存のpaddingなどはそのままでOK） */
+        border-top: 5px solid #ff9a9e; /* ←これを追加 */
     }
 
     /* ミッションボックス：上部にアクセントカラーを入れて「カード感」を強調 */
@@ -89,7 +97,7 @@
 </head>
 <body>
 
-<div class="status-bar">現在地: <span id="gps-status">取得中...</span></div>
+<div id="gps-flag">🏳️</div>
 <div id="map"></div>
 
 <div class="mission-box">
@@ -113,75 +121,107 @@
 </div>
 
 <script>
-    // 北千住のスポット定義 (緯度, 経度)
+    // ★スポット定義
     const spots = [
         { id: 1, name: "Spot A: 駅西口デッキ", desc: "二人の靴を合わせて撮ろう", lat: 35.7498, lng: 139.8045, guide: "靴を枠に入れて！" },
         { id: 2, name: "Spot B: 宿場町通り", desc: "レトロな看板を指差して！", lat: 35.7510, lng: 139.8030, guide: "看板を枠に入れて！" },
         { id: 3, name: "Spot C: 荒川河川敷", desc: "空をバックに影を撮ろう", lat: 35.7550, lng: 139.8080, guide: "影を枠に入れて！" }
     ];
 
-    let currentSpotIndex = 0;
+    let currentTarget = spots[0]; // 最初はAを選択状態に
     let userLat = 0, userLng = 0;
 
-    // 地図の初期化（北千住中心）
-    const map = L.map('map').setView([35.7494, 139.8051], 15);
+    // 地図初期化
+    const map = L.map('map', { zoomControl: false }).setView([35.7494, 139.8051], 15);
     L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-        attribution: '© OpenStreetMap contributors'
+        attribution: '© OpenStreetMap'
     }).addTo(map);
 
-    // スポットにピンを立てる
-    const markers = [];
-    spots.forEach((spot, index) => {
-        const marker = L.marker([spot.lat, spot.lng]).addTo(map).bindPopup(spot.name);
-        markers.push(marker);
+    // ★青と赤のピン画像を用意する
+    const blueIcon = L.icon({
+        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-blue.png',
+        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+        iconSize: [25, 41], iconAnchor: [12, 41], shadowSize: [41, 41]
+    });
+    const redIcon = L.icon({
+        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+        iconSize: [25, 41], iconAnchor: [12, 41], shadowSize: [41, 41]
     });
 
-    // GPS取得開始
+    const markers = []; // 全てのピンを管理する配列
+
+    // ★スポットにピンを立てる部分を書き換え
+    spots.forEach(spot => {
+        // bindPopup を削除し、名前が出ないようにする。初期状態は青ピン。
+        const marker = L.marker([spot.lat, spot.lng], { icon: blueIcon }).addTo(map);
+        markers.push(marker);
+        
+        // ピンをクリックした時の動作
+        marker.on('click', () => {
+            // 一旦すべてのピンを青色に戻す
+            markers.forEach(m => m.setIcon(blueIcon));
+            // クリックされたピンだけ赤色にする
+            marker.setIcon(redIcon);
+
+            currentTarget = spot; 
+            updateMissionDisplay();
+            checkDistance();
+        });
+    });
+
+    // 初期表示の更新
+    updateMissionDisplay();
+
+    function updateMissionDisplay() {
+        document.getElementById('mission-title').innerText = currentTarget.name;
+        document.getElementById('mission-desc').innerHTML = `${currentTarget.desc}<br>目的地まであと <span id="dist-val" style="color:#ff9a9e;font-weight:bold;">---</span> m`;
+    }
+
+    // ★GPS監視（旗の色変え機能つき）
     if (navigator.geolocation) {
         navigator.geolocation.watchPosition((position) => {
             userLat = position.coords.latitude;
             userLng = position.coords.longitude;
-            document.getElementById('gps-status').innerText = "取得OK";
             
-            // 現在地マーカー（青丸）
+            // 旗をピンクにする
+            document.getElementById('gps-flag').classList.add('active');
+            
+            // 現在地マーカー
             if(window.userMarker) map.removeLayer(window.userMarker);
-            window.userMarker = L.circleMarker([userLat, userLng], {color: 'blue', radius: 8}).addTo(map);
+            window.userMarker = L.circleMarker([userLat, userLng], {
+                color: '#fff', fillColor: '#2196F3', fillOpacity: 1, radius: 8, weight: 3
+            }).addTo(map);
 
             checkDistance();
+
         }, (err) => {
-            document.getElementById('gps-status').innerText = "GPS許可が必要です";
-            alert("位置情報の許可をONにしてください！");
-        });
+            // 旗をグレーに戻す
+            document.getElementById('gps-flag').classList.remove('active');
+        }, { enableHighAccuracy: true });
     }
 
-    // 距離判定ロジック
+    // 距離計算とボタン制御
     function checkDistance() {
-        if(currentSpotIndex >= spots.length) {
-            document.getElementById('mission-title').innerText = "コンプリート！";
-            document.getElementById('mission-desc').innerText = "おめでとうございます！デート楽しんでね！";
-            return;
-        }
+        if (!userLat || !userLng) return;
 
-        const target = spots[currentSpotIndex];
-        const dist = getDistance(userLat, userLng, target.lat, target.lng); // メートル計算
-        
-        document.getElementById('mission-title').innerText = target.name;
-        document.getElementById('dist-val').innerText = Math.round(dist);
-        document.getElementById('mission-desc').innerText = target.desc + ` (あと ${Math.round(dist)}m)`;
+        // ★選んでいるターゲット（currentTarget）との距離を計算
+        const dist = getDistance(userLat, userLng, currentTarget.lat, currentTarget.lng);
+        const distElem = document.getElementById('dist-val');
+        if(distElem) distElem.innerText = Math.round(dist);
 
         const btn = document.getElementById('camera-btn');
-        // 50m以内ならボタン有効化 (テスト用に30mにしてます。本番は50に。)
-        if (dist < 30) { 
+        if (dist < 50) { 
             btn.classList.add('active');
-            btn.innerText = "📸 カメラを起動する";
-            btn.onclick = () => openCamera(target.guide);
+            btn.innerText = "📸 ここで撮影する！";
+            btn.onclick = () => openCamera(currentTarget.guide);
         } else {
             btn.classList.remove('active');
             btn.innerText = `エリアまであと ${Math.round(dist)}m`;
             btn.onclick = null;
         }
     }
-
+    
     // カメラ機能（ブラウザ完結）
     const video = document.getElementById('video');
     
@@ -215,7 +255,6 @@
         document.getElementById('stamp-modal').style.display = 'flex';
         
         // 次のスポットへ
-        currentSpotIndex++;
         checkDistance();
     };
 
